@@ -2,6 +2,8 @@
 import React, { useRef, useState } from "react";
 import Image from "next/image";
 import styles from "./page.module.css";
+import Papa from "papaparse";
+import * as XLSX from "xlsx";
 
 type UploadFile = {
   file: File;
@@ -10,11 +12,20 @@ type UploadFile = {
 };
 
 const TABS = ["Home", "How To", "Upload", "Dashboard"];
+const COMMONCOLUMNS = ['Account', 'Date', 'Amount', 'Balance', 'Category'];
+
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState("Home");
   const [files, setFiles] = useState<UploadFile[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const [modalFile, setModalFile] = useState<UploadFile | null>(null);
+  const [fileHeaders, setFileHeaders] = useState<string[]>([]);
+  const [columnMapping, setColumnMapping] = useState<{ [key: string]: string }>({});
+
+  const [masterTransactions, setMasterTransactions] = useState<any[]>([]);
+
 
   // Simulate upload progress
   const uploadFiles = (selectedFiles: FileList | null) => {
@@ -39,16 +50,89 @@ export default function Home() {
           prev.map((f, i) =>
             f.file === uploadFile.file
               ? {
-                  ...f,
-                  progress: Math.min(f.progress + 10, 100),
-                  status: f.progress + 10 >= 100 ? "done" : "uploading",
-                }
+                ...f,
+                progress: Math.min(f.progress + 10, 100),
+                status: f.progress + 10 >= 100 ? "done" : "uploading",
+              }
               : f
           )
         );
         if (uploadFile.progress + 10 >= 100) clearInterval(interval);
       }, 200);
     });
+  };
+
+  const handleSaveMapping = () => {
+    if (!modalFile) return;
+
+    const file = modalFile.file;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = e.target?.result;
+      let rows: any[] = [];
+
+      if (file.name.endsWith(".csv")) {
+        const parsed = Papa.parse(data as string, { header: true });
+        rows = parsed.data as any[];
+      } else if (file.name.endsWith(".xls") || file.name.endsWith(".xlsx")) {
+        const workbook = XLSX.read(data, { type: "binary" });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        // Convert array of arrays to array of objects using headers
+        const headers = rows[0];
+        rows = rows.slice(1).map((row: any[]) => {
+          const obj: any = {};
+          headers.forEach((h: string, i: number) => {
+            obj[h] = row[i];
+          });
+          return obj;
+        });
+      }
+
+      // Map each row to master transaction using columnMapping
+      const mappedTransactions = rows.map(row => {
+        const tx: any = {};
+        COMMONCOLUMNS.forEach(col => {
+          const header = columnMapping[col];
+          tx[col] = row[header];
+        });
+        return tx;
+      });
+
+      setMasterTransactions(prev => [...prev, ...mappedTransactions]);
+    };
+
+    if (file.name.endsWith(".csv")) {
+      reader.readAsText(file);
+    } else {
+      reader.readAsBinaryString(file);
+    }
+  };
+
+  const handleConfigure = (file: File) => {
+    setModalFile(files.find(f => f.file === file) || null);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = e.target?.result;
+      if (file.name.endsWith(".csv")) {
+        const parsed = Papa.parse<string[]>(data as string, { header: true });
+        setFileHeaders(parsed.meta.fields || []);
+      } else if (file.name.endsWith(".xls") || file.name.endsWith(".xlsx")) {
+        const workbook = XLSX.read(data, { type: "binary" });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        setFileHeaders(json[0] as string[]);
+      }
+      setColumnMapping({});
+    };
+    if (file.name.endsWith(".csv")) {
+      reader.readAsText(file);
+    } else {
+      reader.readAsBinaryString(file);
+    }
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -102,7 +186,7 @@ export default function Home() {
             onDragOver={(e) => e.preventDefault()}
           >
             <Image
-              src="/images/upload-icon.png"
+              src="/cloud-upload.svg"
               alt="Upload Icon"
               width={50}
               height={50}
@@ -156,8 +240,8 @@ export default function Home() {
                       ? "CSV"
                       : f.file.name.endsWith(".xls") ||
                         f.file.name.endsWith(".xlsx")
-                      ? "XLS"
-                      : "FILE"}
+                        ? "XLS"
+                        : "FILE"}
                   </span>
                 </div>
                 <div style={{ flex: 1 }}>
@@ -213,9 +297,19 @@ export default function Home() {
                 >
                   &times;
                 </button>
-                <button className="ms-4 btn btn-danger" onClick={handleBrowse}>
-              Configure
-            </button>
+
+                {f.status === "done" ? (
+                  <>
+                    <button
+                      className="ms-4 btn btn-danger"
+                      data-bs-toggle="modal"
+                      data-bs-target="#exampleModal"
+                      onClick={() => handleConfigure(f.file)}
+                    >
+                      Configure
+                    </button>
+                  </>
+                ) : null}
               </div>
             ))}
           </div>
@@ -223,14 +317,19 @@ export default function Home() {
       );
     }
     if (activeTab === "Dashboard") {
-      return <div>Dashboard content goes here.</div>;
+      return (
+        <div>
+          <h4>Master Transactions</h4>
+          <pre>{JSON.stringify(masterTransactions, null, 2)}</pre>
+        </div>
+      );
     }
     return null;
   }
 
   return (
     <div className={styles.page}>
-      <main className={`${styles.main} mt-4`}>
+      <main className={`${styles.main} pt-4`}>
         <div className="container">
           {/* Tab Navigation */}
           <nav style={{ display: "flex", gap: 16, marginBottom: 24 }}>
@@ -255,7 +354,57 @@ export default function Home() {
           {/* Tab Content */}
           {renderTabContent()}
         </div>
+
       </main>
+      <div className="modal fade" id="exampleModal" aria-labelledby="exampleModalLabel" aria-hidden="true">
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title" id="exampleModalLabel">Map Columns</h5>
+              <button type="button" className="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div className="modal-body">
+              {fileHeaders.length === 0 ? (
+                <div>No headers found.</div>
+              ) : (
+                <form>
+                  {COMMONCOLUMNS.map((col) => (
+                    <div className="mb-3" key={col}>
+                      <label className="form-label">{col}</label>
+                      <select
+                        className="form-select"
+                        value={columnMapping[col] || ""}
+                        onChange={e =>
+                          setColumnMapping(mapping => ({
+                            ...mapping,
+                            [col]: e.target.value
+                          }))
+                        }
+                      >
+                        <option value="">Select header</option>
+                        {fileHeaders.map(header => (
+                          <option key={header} value={header}>{header}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </form>
+              )}
+            </div>
+            <div className="modal-footer py-1">
+              <button type="button" className="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                data-bs-dismiss="modal"
+                onClick={handleSaveMapping}
+              >
+                Save changes
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
       <footer className={styles.footer}></footer>
     </div>
   );
